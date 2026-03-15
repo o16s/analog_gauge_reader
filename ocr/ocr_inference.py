@@ -4,7 +4,7 @@ import sys
 
 import numpy as np
 import cv2
-from mmocr.apis import MMOCRInferencer
+from paddleocr import PaddleOCR
 
 # Append path of parent directory to system to import all modules correctly
 parent_dir = os.path.abspath(os.path.join(__file__, os.pardir, os.pardir))
@@ -15,6 +15,22 @@ from ocr.ocr_reading import OCRReading
 from geometry.warp_ellipse import warp_ellipse_to_circle, map_point_original_image,\
       map_point_transformed_image
 
+# Initialize PaddleOCR model once (singleton)
+_paddle_ocr = None
+
+
+def _get_paddle_ocr():
+    global _paddle_ocr
+    if _paddle_ocr is None:
+        _paddle_ocr = PaddleOCR(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            text_detection_model_name='PP-OCRv5_mobile_det',
+            text_recognition_model_name='en_PP-OCRv5_mobile_rec',
+        )
+    return _paddle_ocr
+
 
 def ocr(img, visualize=True):
     """
@@ -24,35 +40,37 @@ def ocr(img, visualize=True):
     :return: ocr_results_dict with two keys: 'predictions' what we care about
      and 'visualization' the image for debugging/understanding
     """
-    ocr_model = MMOCRInferencer(det='DB_r18', rec='ABINet')
+    ocr_model = _get_paddle_ocr()
 
     readings = []
+    visualization = img.copy()
 
-    # MMOCR seems to throw error if no text detected
     try:
-        results = ocr_model(img, return_vis=visualize)
+        results = list(ocr_model.predict(img))
 
-        visualization = results['visualization'][0]
+        for res in results:
+            if not res or not res.get('rec_texts'):
+                continue
+            texts = res['rec_texts']
+            scores = res['rec_scores']
+            polygons = res['dt_polys']
 
-        polygons = results['predictions'][0]['det_polygons']
+            for polygon, text, score in zip(polygons, texts, scores):
+                poly_array = np.array(polygon, dtype=np.float32)
+                reading = OCRReading(poly_array, text, score)
+                readings.append(reading)
 
-        shapes = []
-        for coord_list in polygons:
-            shape_array = np.array(coord_list)
-            shape_array = shape_array.reshape(-1, 2)
-            shapes.append(shape_array)
+                # Draw on visualization image
+                if visualize:
+                    pts = poly_array.astype(np.int32)
+                    cv2.polylines(visualization, [pts], True, (0, 255, 0), 2)
+                    x, y = int(pts[0][0]), int(pts[0][1]) - 5
+                    cv2.putText(visualization, f"{text} ({score:.2f})",
+                                (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                (0, 255, 0), 1)
 
-        scores = results['predictions'][0]['rec_scores']
-        texts = results['predictions'][0]['rec_texts']
-
-        assert len(scores) == len(texts) and len(scores) == len(shapes)
-
-        for index, score in enumerate(scores):
-            reading = OCRReading(shapes[index], texts[index], score)
-            readings.append(reading)
-
-    except IndexError:
-        print("nothing detected")
+    except (IndexError, Exception) as e:
+        print(f"PaddleOCR: nothing detected ({e})")
 
     if visualize:
         return readings, visualization

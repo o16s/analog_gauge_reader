@@ -1,6 +1,57 @@
+import re
+
 import numpy as np
 
 UNIT_LIST = ["bar", "mbar", "millibars", "MPa", "psi", "C", "°C", "F", "°F", "%"]
+
+# Pattern to tokenize merged OCR text like "-2bar 2" into ["-2", "bar", "2"]
+_TOKEN_RE = re.compile(
+    r"-?\d+\.?\d*"   # numbers (including negative and decimal)
+    r"|"
+    r"[A-Za-z°%]+"   # letter/unit tokens
+)
+
+
+def _sub_polygon(polygon, text, start, end):
+    """Estimate a sub-polygon for a token spanning characters [start, end)
+    within the full text. Interpolates along the text direction (top-left →
+    top-right and bottom-left → bottom-right edges of the quad)."""
+    n = max(len(text), 1)
+    t0 = start / n
+    t1 = end / n
+    # PaddleOCR polygons are ordered: top-left, top-right, bottom-right, bottom-left
+    tl, tr, br, bl = polygon[0], polygon[1], polygon[2], polygon[3]
+    new_tl = tl + t0 * (tr - tl)
+    new_tr = tl + t1 * (tr - tl)
+    new_br = bl + t1 * (br - bl)
+    new_bl = bl + t0 * (br - bl)
+    return np.array([new_tl, new_tr, new_br, new_bl], dtype=np.float32)
+
+
+def split_ocr_readings(readings):
+    """Split OCR readings that contain merged text (e.g. '-2bar 2') into
+    individual OCRReading objects with estimated sub-polygons. Readings that
+    are already a single number or unit are passed through unchanged."""
+    out = []
+    for r in readings:
+        if r.is_number() or r.is_unit():
+            out.append(r)
+            continue
+        tokens = _TOKEN_RE.findall(r.reading)
+        if len(tokens) <= 1:
+            out.append(r)
+            continue
+        # Find character offsets of each token in the original text
+        raw = r.reading
+        pos = 0
+        for token in tokens:
+            idx = raw.find(token, pos)
+            if idx == -1:
+                idx = pos
+            sub_poly = _sub_polygon(r.polygon, raw, idx, idx + len(token))
+            out.append(OCRReading(sub_poly, token, r.confidence))
+            pos = idx + len(token)
+    return out
 
 
 class OCRReading:

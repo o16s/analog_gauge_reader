@@ -11,6 +11,7 @@ from PIL import Image
 from plots import RUN_PATH, Plotter
 from gauge_detection.detection_inference import detection_gauge_face
 from ocr.ocr_inference import ocr, ocr_rotations, ocr_single_rotation, ocr_warp
+from ocr.ocr_reading import split_ocr_readings
 from key_point_detection.key_point_inference import KeyPointInference, detect_key_points
 from geometry.ellipse import fit_ellipse, cart_to_pol, get_line_ellipse_point, \
     get_point_from_angle, get_polar_angle, get_theta_middle, get_ellipse_error
@@ -311,6 +312,9 @@ def process_image(image, detection_model_path, key_point_model_path,
         else:
             ocr_readings = ocr(cropped_img, debug)
 
+    # Split merged detections like "-2bar 2" into individual readings.
+    ocr_readings = split_ocr_readings(ocr_readings)
+
     # resize detected ocr to our resized image.
     for reading in ocr_readings:
         polygon = reading.polygon
@@ -536,8 +540,19 @@ def write_files(result, result_full, errors, run_path, eval_mode):
         write_json_file(result_full_path, result_full)
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 def write_json_file(filename, dictionary):
-    file_json = json.dumps(dictionary, indent=4)
+    file_json = json.dumps(dictionary, indent=4, cls=_NumpyEncoder)
     with open(filename, "w") as outfile:
         outfile.write(file_json)
 

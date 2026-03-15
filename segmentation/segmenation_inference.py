@@ -4,30 +4,51 @@ import cv2
 from scipy import odr
 
 
+def _extract_mask(results, image_shape):
+    """Extract the top-confidence needle mask from YOLO results.
+    Returns (x_coords, y_coords) or None if no mask found."""
+    masks = results[0].masks
+    if masks is None:
+        return None
+    try:
+        needle_mask = masks.data[0].numpy()
+    except:
+        needle_mask = masks.data[0].cpu().numpy()
+    needle_mask_resized = cv2.resize(needle_mask,
+                                     dsize=(image_shape[1], image_shape[0]),
+                                     interpolation=cv2.INTER_NEAREST)
+    y_coords, x_coords = np.where(needle_mask_resized)
+    if len(x_coords) == 0:
+        return None
+    return x_coords, y_coords
+
+
 def segment_gauge_needle(image, model_path='best.pt'):
     """
-    uses fine-tuned yolo v8 to get mask of segmentation
-    :param img: numpy image
-    :param model_path: path to yolov8 detection model
-    :return: segmentation of needle
+    uses fine-tuned yolo v8 to get mask of segmentation.
+    Falls back to grayscale if color segmentation finds no needle
+    (handles colored needles the model wasn't trained on).
+    :param image: numpy image (RGB)
+    :param model_path: path to yolov8 segmentation model
+    :return: segmentation of needle as (x_coords, y_coords)
     """
-    model = YOLO(model_path)  # load model
+    model = YOLO(model_path)
 
-    results = model.predict(
-        image)  # run inference, detects gauge face and needle
+    results = model.predict(image)
+    mask = _extract_mask(results, image.shape)
+    if mask is not None:
+        return mask
 
-    # get list of detected boxes, already sorted by confidence
-    try:
-        needle_mask = results[0].masks.data[0].numpy()
-    except:
-        needle_mask = results[0].masks.data[0].cpu().numpy()
-    needle_mask_resized = cv2.resize(needle_mask,
-                                     dsize=(image.shape[1], image.shape[0]),
-                                     interpolation=cv2.INTER_NEAREST)
+    # Fallback: convert to grayscale so colored needles appear dark
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray_3ch = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    results = model.predict(gray_3ch)
+    mask = _extract_mask(results, image.shape)
+    if mask is not None:
+        return mask
 
-    y_coords, x_coords = np.where(needle_mask_resized)
-
-    return x_coords, y_coords
+    # Neither worked — raise AttributeError to match original behavior
+    raise AttributeError("No needle mask found in color or grayscale")
 
 
 def get_fitted_line(x_coords, y_coords):

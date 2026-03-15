@@ -138,3 +138,8 @@ yolov8?-seg.pt
 .vscode/
 **/runs
 **/data
+mlflow.db
+mlruns/
+results/
+test_gauge.jpg
+test_paddleocr.py
